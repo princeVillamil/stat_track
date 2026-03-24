@@ -1,0 +1,23 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+celery==5.4.0
+redis==5.0.4
+psycopg2-binary==2.9.9
+python-dotenv==1.0.1
+
+# models to sql migration
+sqlalchemy==2.0.30
+alembic==1.13.1
+
+# API catcher
+httpx==0.27.0 
+tenacity==8.3.0
+
+# test
+pytest==8.2.0
+pytest-asyncio==0.23.7
+
+# Celery
+celery==5.4.0
+flower==2.0.1         # web UI to monitor tasks
+sqlalchemy==2.0.30    # already there, just confirming
