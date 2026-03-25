@@ -11,6 +11,7 @@ from database import SessionLocal
 
 # import your async API client
 from services.deadlock_client import get_leaderboard, get_player_mmr_history
+from services.leaderboard import bulk_update_leaderboard, store_leaderboard_metadata
 
 app = Celery(
     "tasks",
@@ -147,31 +148,62 @@ def refresh_leaderboard(self, region: str):
                 ))
 
                 pipe.zadd(redis_key, {account_name: badge_level})
-                # 2. write snapshot row — rank history
-                snapshot = LeaderboardSnapshot(
-                    account_name=account_name,  # ← correct field
-                    region=region,
-                    rank=entry.get("rank"),
-                    badge_level=badge_level,
-                    ranked_rank=entry.get("ranked_rank"),
-                    ranked_subrank=entry.get("ranked_subrank"),
-                    top_hero_ids=top_hero_ids,
-                    snapshot_at=snapshot_at,
-                )
-                db.add(snapshot)
+                # # 2. write snapshot row — rank history
+                # snapshot = LeaderboardSnapshot(
+                #     account_name=account_name,  # ← correct field
+                #     region=region,
+                #     rank=entry.get("rank"),
+                #     badge_level=badge_level,
+                #     ranked_rank=entry.get("ranked_rank"),
+                #     ranked_subrank=entry.get("ranked_subrank"),
+                #     top_hero_ids=top_hero_ids,
+                #     snapshot_at=snapshot_at,
+                # )
+                # db.add(snapshot)
 
                 # 3. add to Redis sorted set
                 # score = badge_level so ZREVRANGE returns highest badge first
-                pipe.zadd(redis_key, {str(account_id): entry.get("badge_level", 0)})
+                # pipe.zadd(redis_key, {str(account_id): entry.get("badge_level", 0)})
 
             db.commit()
 
             # execute all Redis writes in one shot
             pipe.execute()
 
-            # set expiry on the sorted set — 10 min safety net
-            redis_client.expire(redis_key, 600)
+            # resolved = [
+            #     {
+            #         "account_name":   entry.get("account_name"),
+            #         "badge_level":    entry.get("badge_level", 0),
+            #         "ranked_rank":    entry.get("ranked_rank"),
+            #         "ranked_subrank": entry.get("ranked_subrank"),
+            #         "top_hero_ids":   entry.get("top_hero_ids", []),
+            #         "rank":           entry.get("rank"),
+            #     }
+            #     for entry in entries
+            #     if entry.get("account_name")
+            # ]
+            resolved = [
+                {
+                    "account_name": entry.get("account_name"),
+                    "account_id":   entry.get("possible_account_ids", [None])[0] if len(entry.get("possible_account_ids", [])) == 1 else None,
+                    "badge_level":  entry.get("badge_level", 0),
+                    "ranked_rank":  entry.get("ranked_rank"),
+                    "ranked_subrank": entry.get("ranked_subrank"),
+                    "top_hero_ids": entry.get("top_hero_ids", []),
+                    "rank":         entry.get("rank"),
+                }
+                for entry in entries
+                if entry.get("account_name")
+            ]
+                        
 
+            run_async(bulk_update_leaderboard(region, resolved))
+            run_async(store_leaderboard_metadata(region, resolved))
+            # set expiry on the sorted set — 10 min safety net
+            redis_client.expire(f"leaderboard:{region}", 600)
+            # redis_client.expire(redis_key, 600)
+
+            print(f"Refreshed {region}: {len(resolved)} players in Postgres + Redis")
             print(f"Refreshed {region}: {len(entries)} players stored")
 
         except Exception as e:
