@@ -6,14 +6,13 @@ from services.leaderboard import (
     get_leaderboard_size,
     get_player_score,
 )
+from services.response_cache import cache_response
 
 router = APIRouter(prefix="/api/v1/leaderboard", tags=["leaderboard"])
-
 VALID_REGIONS = ["NAmerica", "Europe", "Asia", "SAmerica", "Oceania"]
 
 
 def validate_region(region: str) -> str:
-    """Raise 404 if region string is not valid."""
     if region not in VALID_REGIONS:
         raise HTTPException(
             status_code=404,
@@ -21,33 +20,21 @@ def validate_region(region: str) -> str:
         )
     return region
 
-@router.get("/health}")
-async def health():
-    return {"status": "ok", "version": "1.0.0"}
-    
+
 @router.get("/{region}", response_model=LeaderboardResponse)
+@cache_response(ttl=30, prefix="cache:leaderboard")
 async def get_leaderboard(
     region: str,
     limit:  int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0,  ge=0, le=10000),
 ):
-    """
-    Get the leaderboard for a region.
-
-    - **region**: NAmerica | Europe | Asia | SAmerica | Oceania
-    - **limit**: number of players to return (1-100, default 50)
-    - **offset**: pagination offset (default 0)
-    """
     validate_region(region)
 
     entries = await get_enriched_leaderboard(region, limit=limit, offset=offset)
     total   = await get_leaderboard_size(region)
 
     if not entries and total == 0:
-        raise HTTPException(
-            status_code=503,
-            detail="Leaderboard data not yet available. Check back in a few minutes."
-        )
+        raise HTTPException(status_code=503, detail="Leaderboard data not yet available.")
 
     return LeaderboardResponse(
         region=region,
@@ -69,18 +56,11 @@ async def get_leaderboard(
 
 
 @router.get("/{region}/player/{account_name}", response_model=PlayerRankResponse)
+@cache_response(ttl=60, prefix="cache:player_rank")
 async def get_player_leaderboard_rank(region: str, account_name: str):
-    """
-    Get a specific player's rank in a region.
-    Returns rank=null if the player is not on the leaderboard.
-    """
     validate_region(region)
-
     rank        = await get_player_rank(region, account_name)
     badge_level = await get_player_score(region, account_name)
-    print("Rank",rank)
-    print("Rank",badge_level)
-
     return PlayerRankResponse(
         account_name=account_name,
         region=region,

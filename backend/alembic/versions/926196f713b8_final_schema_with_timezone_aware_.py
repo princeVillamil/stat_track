@@ -1,8 +1,8 @@
 """final schema with timezone aware datetimes
 
-Revision ID: 72a9f9136cc0
+Revision ID: 926196f713b8
 Revises: 
-Create Date: 2026-03-24 05:25:04.340621
+Create Date: 2026-03-26 03:09:07.622733
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '72a9f9136cc0'
+revision: str = '926196f713b8'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
