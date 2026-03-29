@@ -1,5 +1,8 @@
 # Deadlock Leaderboard
 
+<img width="843" height="532" alt="image" src="https://github.com/user-attachments/assets/9959afc8-7fd4-4fa8-b6f7-82483a04b4b4" />
+
+
 A real-time leaderboard and player stats dashboard for the game Deadlock. Fetches live data from `deadlock-api.com`, stores rank history in PostgreSQL, serves fast reads from Redis sorted sets, and pushes live updates to the browser via WebSockets.
 
 ---
