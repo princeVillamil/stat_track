@@ -9,7 +9,6 @@ from models import Player, LeaderboardSnapshot
 from database import SessionLocal
 from services.deadlock_client import get_leaderboard, get_player_mmr_history
 from services.leaderboard import bulk_update_leaderboard, store_leaderboard_metadata
-
 from services.response_cache import invalidate_cache_prefix
 
 app = Celery(
@@ -26,16 +25,21 @@ app.conf.update(
             "task": "tasks.refresh_leaderboard",
             "schedule": 300.0,
             "args": ["NAmerica"],
+            # fires at 0:00, 5:00, 10:00...
         },
         "refresh-Europe-leaderboard": {
             "task": "tasks.refresh_leaderboard",
             "schedule": 300.0,
             "args": ["Europe"],
+            # offset by 100 seconds
+            "options": {"countdown": 100},
         },
         "refresh-Asia-leaderboard": {
             "task": "tasks.refresh_leaderboard",
             "schedule": 300.0,
             "args": ["Asia"],
+            # offset by 200 seconds
+            "options": {"countdown": 200},
         },
     },
 )
@@ -57,23 +61,28 @@ def refresh_leaderboard(self, region: str):
             print(f"No data returned for region {region}")
             return
 
-        entries = data["entries"]
+        # ✅ FIX 1: sort entries BEFORE DB operations
+        entries = sorted(
+            data["entries"],
+            key=lambda e: e.get("account_name", "")
+        )
+
         db = SessionLocal()
         snapshot_at = datetime.now(timezone.utc)
 
         try:
             pipe = redis_client.pipeline()
-
             resolved = []
+
             for entry in entries:
-                account_name  = entry.get("account_name")
+                account_name = entry.get("account_name")
                 if not account_name:
                     continue
 
-                possible_ids  = entry.get("possible_account_ids", [])
-                account_id    = possible_ids[0] if len(possible_ids) == 1 else None
-                badge_level   = entry.get("badge_level", 0)
-                top_hero_ids  = ",".join(str(h) for h in entry.get("top_hero_ids", []))
+                possible_ids = entry.get("possible_account_ids", [])
+                account_id = possible_ids[0] if len(possible_ids) == 1 else None
+                badge_level = entry.get("badge_level", 0)
+                top_hero_ids = ",".join(str(h) for h in entry.get("top_hero_ids", []))
 
                 stmt = insert(Player).values(
                     account_name=account_name,
@@ -100,12 +109,12 @@ def refresh_leaderboard(self, region: str):
                 ))
 
                 resolved.append({
-                    "account_name":   account_name,
-                    "badge_level":    badge_level,
-                    "ranked_rank":    entry.get("ranked_rank"),
+                    "account_name": account_name,
+                    "badge_level": badge_level,
+                    "ranked_rank": entry.get("ranked_rank"),
                     "ranked_subrank": entry.get("ranked_subrank"),
-                    "top_hero_ids":   entry.get("top_hero_ids", []),
-                    "rank":           entry.get("rank"),
+                    "top_hero_ids": entry.get("top_hero_ids", []),
+                    "rank": entry.get("rank"),
                 })
 
             db.commit()
@@ -115,18 +124,20 @@ def refresh_leaderboard(self, region: str):
             run_async(store_leaderboard_metadata(region, resolved))
             redis_client.expire(f"leaderboard:{region}", 600)
 
-            # Cache ttl updated day 7
+            # Cache invalidation
             run_async(invalidate_cache_prefix("cache:leaderboard"))
             run_async(invalidate_cache_prefix("cache:player_rank"))
-            # notify all connected WebSocket clients
+
+            # Notify WebSocket clients
             redis_client.publish(
                 "leaderboard:updates",
                 json.dumps({
-                    "event":   "leaderboard_updated",
-                    "region":  region,
+                    "event": "leaderboard_updated",
+                    "region": region,
                     "updated": len(resolved),
                 })
             )
+
             print(f"Published update event for {region}")
             print(f"Refreshed {region}: {len(resolved)} players stored")
 
@@ -147,6 +158,7 @@ def fetch_player_mmr_history(self, account_id: int):
         data = run_async(get_player_mmr_history(account_id))
         if not data:
             return
+
         db = SessionLocal()
         try:
             for entry in data:
@@ -162,5 +174,6 @@ def fetch_player_mmr_history(self, account_id: int):
             raise e
         finally:
             db.close()
+
     except Exception as exc:
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
