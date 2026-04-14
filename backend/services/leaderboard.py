@@ -10,12 +10,19 @@ def _meta_key(region: str, account_name: str) -> str:
 async def bulk_update_leaderboard(region: str, entries: list[dict]) -> None:
     if not entries:
         return
+    # Use a composite score: BadgeLevel + (1 - Rank/10000)
+    # This keeps BadgeLevel as the primary sort, but uses Rank to break ties
+    # in the original order from the API.
     mapping = {
-        entry["account_name"]: entry["badge_level"]
+        entry["account_name"]: float(entry["badge_level"]) + (1.0 - (float(entry.get("rank", 10000)) / 10000.0))
         for entry in entries
         if entry.get("account_name")
     }
-    await redis_client.zadd(_key(region), mapping)
+    key = _key(region)
+    pipe = redis_client.pipeline()
+    pipe.delete(key)
+    pipe.zadd(key, mapping)
+    await pipe.execute()
 
 async def store_leaderboard_metadata(region: str, entries: list[dict]) -> None:
     if not entries:

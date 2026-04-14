@@ -5,7 +5,7 @@ from celery import Celery
 import json
 from datetime import datetime, timezone
 from sqlalchemy.dialects.postgresql import insert
-from models import Player, LeaderboardSnapshot
+from models import Player, LeaderboardSnapshot, MmrHistory, PlayerHeroStats
 from database import SessionLocal
 from services.deadlock_client import get_leaderboard, get_player_mmr_history
 from services.leaderboard import bulk_update_leaderboard, store_leaderboard_metadata
@@ -41,6 +41,18 @@ app.conf.update(
             # offset by 200 seconds
             "options": {"countdown": 200},
         },
+        "refresh-SAmerica-leaderboard": {
+            "task": "tasks.refresh_leaderboard",
+            "schedule": 300.0,
+            "args": ["SAmerica"],
+            "options": {"countdown": 300},
+        },
+        "refresh-Oceania-leaderboard": {
+            "task": "tasks.refresh_leaderboard",
+            "schedule": 300.0,
+            "args": ["Oceania"],
+            "options": {"countdown": 400},
+        },
     },
 )
 
@@ -57,14 +69,14 @@ def run_async(coro):
 def refresh_leaderboard(self, region: str):
     try:
         data = run_async(get_leaderboard(region))
+
         if not data or "entries" not in data:
             print(f"No data returned for region {region}")
             return
 
-        # ✅ FIX 1: sort entries BEFORE DB operations
         entries = sorted(
             data["entries"],
-            key=lambda e: e.get("account_name", "")
+            key=lambda e: e.get("rank", 0)
         )
 
         db = SessionLocal()
@@ -80,23 +92,59 @@ def refresh_leaderboard(self, region: str):
                     continue
 
                 possible_ids = entry.get("possible_account_ids", [])
-                account_id = possible_ids[0] if len(possible_ids) == 1 else None
+
+                # should pick deterministic account_id (never skip for uniqueness logic)
+                account_id = possible_ids[0] if possible_ids else None
+
                 badge_level = entry.get("badge_level", 0)
-                top_hero_ids = ",".join(str(h) for h in entry.get("top_hero_ids", []))
-
-                stmt = insert(Player).values(
-                    account_name=account_name,
-                    account_id=account_id,
-                    last_seen=snapshot_at,
-                ).on_conflict_do_update(
-                    index_elements=["account_name"],
-                    set_={
-                        "last_seen": snapshot_at,
-                        "account_id": account_id,
-                    }
+                top_hero_ids = ",".join(
+                    str(h) for h in entry.get("top_hero_ids", [])
                 )
-                db.execute(stmt)
 
+                # Stable Upsert Logic
+                try:
+                    stmt = insert(Player).values(
+                        account_name=account_name,
+                        account_id=account_id,
+                        last_seen=snapshot_at,
+                    ).on_conflict_do_update(
+                        index_elements=["account_name"],
+                        set_={
+                            "account_id": account_id,
+                            "last_seen": snapshot_at,
+                        }
+                    )
+                    db.execute(stmt)
+                    db.flush()
+                except Exception as e:
+                    db.rollback()
+                    # Check if it's a unique constraint violation on account_id
+                    # This happens when a player changes their name (e.g., Bob -> Dave, but ID is same)
+                    if account_id and ("account_id" in str(e).lower()):
+                        print(f"DEBUG: Identity conflict for {account_id} ({account_name}). Attempting rename.")
+                        existing_by_id = db.query(Player).filter(Player.account_id == account_id).first()
+                        if existing_by_id:
+                            # We found the player by ID. Now we need to rename them to the new name.
+                            conflict_player = db.query(Player).filter(Player.account_name == account_name).first()
+                            if conflict_player:
+                                print(f"DEBUG: Name conflict for {account_name}. Deleting redundant player.")
+                                db.query(LeaderboardSnapshot).filter(LeaderboardSnapshot.account_name == account_name).update({"account_name": existing_by_id.account_name})
+                                db.query(MmrHistory).filter(MmrHistory.account_name == account_name).update({"account_name": existing_by_id.account_name})
+                                db.query(PlayerHeroStats).filter(PlayerHeroStats.account_name == account_name).update({"account_name": existing_by_id.account_name})
+                                db.delete(conflict_player)
+                                db.flush()
+
+                            existing_by_id.account_name = account_name
+                            existing_by_id.last_seen = snapshot_at
+                            db.flush()
+                            print(f"DEBUG: Renamed player to {account_name}")
+                    else:
+                        print(f"ERROR: Unexpected exception for {account_name}: {e}")
+                        raise e
+
+                # =========================
+                # Snapshot insert (history)
+                # =========================
                 db.add(LeaderboardSnapshot(
                     account_name=account_name,
                     region=region,
@@ -110,6 +158,7 @@ def refresh_leaderboard(self, region: str):
 
                 resolved.append({
                     "account_name": account_name,
+                    "account_id": account_id,
                     "badge_level": badge_level,
                     "ranked_rank": entry.get("ranked_rank"),
                     "ranked_subrank": entry.get("ranked_subrank"),
@@ -120,15 +169,17 @@ def refresh_leaderboard(self, region: str):
             db.commit()
             pipe.execute()
 
+            # Redis + leaderboard update
             run_async(bulk_update_leaderboard(region, resolved))
             run_async(store_leaderboard_metadata(region, resolved))
+
             redis_client.expire(f"leaderboard:{region}", 600)
 
             # Cache invalidation
             run_async(invalidate_cache_prefix("cache:leaderboard"))
             run_async(invalidate_cache_prefix("cache:player_rank"))
 
-            # Notify WebSocket clients
+            # WebSocket notif
             redis_client.publish(
                 "leaderboard:updates",
                 json.dumps({
@@ -138,8 +189,8 @@ def refresh_leaderboard(self, region: str):
                 })
             )
 
-            print(f"Published update event for {region}")
             print(f"Refreshed {region}: {len(resolved)} players stored")
+            print(f"Published update event for {region}")
 
         except Exception as e:
             db.rollback()
@@ -148,12 +199,13 @@ def refresh_leaderboard(self, region: str):
             db.close()
 
     except Exception as exc:
-        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
-
+        raise self.retry(
+            exc=exc,
+            countdown=60 * (2 ** self.request.retries)
+        )
 
 @app.task(bind=True, max_retries=3)
 def fetch_player_mmr_history(self, account_id: int):
-    from models import MmrHistory
     try:
         data = run_async(get_player_mmr_history(account_id))
         if not data:

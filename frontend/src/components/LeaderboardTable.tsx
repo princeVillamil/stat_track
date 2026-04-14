@@ -1,14 +1,40 @@
 import { useNavigate } from 'react-router-dom'
 import type { LeaderboardEntry } from '../types/api'
 import RankBadge from './RankBadge'
-import HeroIcons from './HeroIcons'
+// import HeroIcons from './HeroIcons'
 import SkeletonRow from './SkeletonRow'
+
 
 interface Props {
   entries: LeaderboardEntry[]
   isLoading: boolean
   highlightedPlayer?: string   // account_name to highlight
 }
+
+const RANKS: Record<number, string> = {
+  0: "Obscurus",
+  1: "Initiate",
+  2: "Seeker",
+  3: "Alchemist",
+  4: "Arcanist",
+  5: "Ritualist",
+  6: "Emissary",
+  7: "Archon",
+  8: "Oracle",
+  9: "Phantom",
+  10: "Ascendant",
+  11: "Eternus",
+}
+function getRankName(tier: number): string {
+  return RANKS[tier] ?? "Unknown"
+}
+function decodeBadgeLevel(badgeLevel: number) {
+  return {
+    tier: Math.floor(badgeLevel / 10),
+    subrank: badgeLevel % 10,
+  }
+}
+
 
 export default function LeaderboardTable({ entries, isLoading, highlightedPlayer }: Props) {
   const navigate = useNavigate()
@@ -38,7 +64,7 @@ export default function LeaderboardTable({ entries, isLoading, highlightedPlayer
         <span className="text-xs text-slate-500 uppercase tracking-wider w-12">Rank</span>
         <span className="text-xs text-slate-500 uppercase tracking-wider">Player</span>
         <span className="text-xs text-slate-500 uppercase tracking-wider">Tier</span>
-        <span className="text-xs text-slate-500 uppercase tracking-wider">Top Heroes</span>
+        {/* <span className="text-xs text-slate-500 uppercase tracking-wider">Top Heroes</span> */}
       </div>
 
       {/* rows */}
@@ -64,22 +90,25 @@ export default function LeaderboardTable({ entries, isLoading, highlightedPlayer
               {entry.account_name}
             </span>
             {/* ranked tier — shows as "XI-6" for ranked_rank=11, ranked_subrank=6 */}
-            {entry.ranked_rank && (
+            {/* {entry.ranked_rank && (
               <span className="ml-2 text-xs text-slate-500 flex-shrink-0">
                 {toRoman(entry.ranked_rank)}-{entry.ranked_subrank}
               </span>
-            )}
+            )} */}
           </div>
 
           {/* badge level */}
           <span className="text-xs text-slate-400 font-mono self-center">
-            {entry.badge_level}
+            {getRankName(decodeBadgeLevel(entry.badge_level).tier)}
+            <span className="text-slate-600 ml-1">
+              {decodeBadgeLevel(entry.badge_level).subrank > 0 ? `- ${toRoman(decodeBadgeLevel(entry.badge_level).subrank)}` : "Obscurus"}
+            </span>
           </span>
 
           {/* hero icons */}
-          <div className="self-center">
+          {/* <div className="self-center">
             <HeroIcons heroIds={entry.top_hero_ids} max={3} />
-          </div>
+          </div> */}
         </div>
       ))}
     </div>
